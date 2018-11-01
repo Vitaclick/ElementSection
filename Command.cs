@@ -6,6 +6,7 @@ using System.Linq;
 using Autodesk.Revit.ApplicationServices;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Architecture;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 #endregion
@@ -29,15 +30,35 @@ namespace ElementSection
           .OfClass(typeof(RevitLinkInstance))
           .ToList();
 
-      var bsBlockValue = "Детский сад 20";
-
       var loadedExternalFilesRef = new List<RevitLinkType>();
+
+      var forms = new FilteredElementCollector(doc)
+          .WhereElementIsNotElementType()
+          .OfCategory(BuiltInCategory.OST_Mass)
+          .Where(f => ((FamilyInstance)f).Symbol.LookupParameter("Группа модели").AsString() != string.Empty)
+          .ToList();
+
+      var sectionForms = new Dictionary<string, BoundingBoxIsInsideFilter>();
+
+      foreach (FamilyInstance form in forms)
+      {
+        var sectionName = form.Symbol.LookupParameter("Группа модели")?.AsString();
+        if (sectionName == null) continue;
+        //        var formSolid = GetSolidFromElement(form);
+        var bbForm = form.get_BoundingBox(null);
+
+        var formOutline = new Outline(bbForm.Min, bbForm.Max);
+
+        var formFilter = new BoundingBoxIsInsideFilter(formOutline);
+
+        sectionForms.Add(sectionName, formFilter);
+      }
+
 
       foreach (RevitLinkInstance link in links)
       {
         RevitLinkType linkType = doc.GetElement(link.GetTypeId()) as RevitLinkType;
-//        if (linkType.IsNestedLink)
-//          continue;
+
         var linkRef = linkType.GetExternalFileReference();
         if (null == linkRef)
           continue;
@@ -51,43 +72,35 @@ namespace ElementSection
           }
         }
 
-        var linkModelPath = linkRef.GetPath();
-
-        // treow an exception if unloaded
-//        var linkDoc = link.GetLinkDocument();
-        // throw an exception if nested
-//        var linkModelPath = linkDoc.GetWorksharingCentralModelPath();
-
         OpenOptions openOpts = new OpenOptions();
         openOpts.SetOpenWorksetsConfiguration(new WorksetConfiguration(WorksetConfigurationOption.OpenAllWorksets));
 
-        // open link doc
-//        var currentUiDoc = uiapp.OpenAndActivateDocument(linkModelPath, openOpts, false);
-//        var currentDoc = currentUiDoc.Document;
-        var currentDoc = app.OpenDocumentFile(linkModelPath, openOpts);
+        var currentDoc = app.OpenDocumentFile(linkRef.GetPath(), openOpts);
 
-        var allLinkElements = new FilteredElementCollector(currentDoc)
-          .WhereElementIsNotElementType()
-          .Where(x => x.Category != null && x.IsValidObject)
-          .ToList();
-
-        using (Transaction tx = new Transaction(currentDoc))
+        foreach (var form in sectionForms)
         {
-          tx.Start("Assign section");
-          foreach (var linkElement in allLinkElements)
+          var allLinkModelElementsByForm = GetModelElementsByForm(currentDoc, form.Value);
+
+          using (Transaction tx = new Transaction(currentDoc))
           {
-            var par = linkElement.LookupParameter("BS_Блок");
-            if (par != null)
+            tx.Start("Assign section");
+            foreach (var linkElement in allLinkModelElementsByForm)
             {
-              if (!par.IsReadOnly)
+
+              var par = linkElement.LookupParameter("BS_Блок");
+              if (par != null)
               {
-                par.Set(bsBlockValue);
+                if (!par.IsReadOnly)
+                {
+                  par.Set(form.Key);
+                }
               }
             }
-          }
-          tx.Commit();
+            tx.Commit();
 
+          }
         }
+
         SyncWithCentral(currentDoc);
         currentDoc.Close(false);
       }
@@ -98,6 +111,48 @@ namespace ElementSection
         link.Load();
       }
       return Result.Succeeded;
+    }
+
+    //    private List<>
+
+    private Solid GetSolidFromElement(Element element)
+    {
+      foreach (GeometryObject geometryObject in element.get_Geometry(new Options()
+      {
+        IncludeNonVisibleObjects = true,
+        DetailLevel = ViewDetailLevel.Fine
+      }).GetTransformed(Transform.Identity))
+      {
+        if (geometryObject is Solid solid && Math.Abs(solid.Volume) > 0.0001)
+          return solid;
+      }
+      return null;
+    }
+
+
+
+    private List<Element> GetModelElementsByForm(Document doc, BoundingBoxIsInsideFilter bbFilter)
+    {
+
+      var binCategories = Enum.GetValues(typeof(BuiltInCategory)).Cast<int>().ToList();
+
+      var categories = ViewSchedule.GetValidCategoriesForSchedule().AsEnumerable()
+        .Where(x => binCategories.Contains(x.IntegerValue))
+        .Select(x => x.IntegerValue)
+        .ToList();
+
+      var allLinkElements = new FilteredElementCollector(doc)
+        .WhereElementIsNotElementType()
+        .WherePasses(bbFilter)
+        .Where(x => x.Category != null &&
+                    x.IsValidObject &&
+                    ((x.Location != null && (x.Location is LocationCurve || x.Location is LocationPoint)) || categories.Contains(x.Category.Id.IntegerValue)) &&
+                    x.GetTypeId().IntegerValue > 0 &&
+                    !(x is ProjectLocation) &&
+                    !(x is View) &&
+                    !(x is Room))
+        .ToList();
+      return allLinkElements;
     }
 
     public void SyncWithCentral(Document doc)
@@ -120,7 +175,7 @@ namespace ElementSection
       }
       catch (Exception ex)
       {
-        TaskDialog.Show($"Sync with model {doc.Title}", ex.Message);
+        Debug.Write($"Sync with model {doc.Title}", ex.Message);
       }
     }
   }
