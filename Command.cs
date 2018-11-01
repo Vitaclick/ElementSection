@@ -12,131 +12,116 @@ using Autodesk.Revit.UI.Selection;
 
 namespace ElementSection
 {
-    [Transaction(TransactionMode.Manual)]
-    public class Command : IExternalCommand
+  [Transaction(TransactionMode.Manual)]
+  public class Command : IExternalCommand
+  {
+    public Result Execute(
+      ExternalCommandData commandData,
+      ref string message,
+      ElementSet elements)
     {
-        public Result Execute(
-          ExternalCommandData commandData,
-          ref string message,
-          ElementSet elements)
+      UIApplication uiapp = commandData.Application;
+      UIDocument uidoc = uiapp.ActiveUIDocument;
+      Application app = uiapp.Application;
+      Document doc = uidoc.Document;
+
+      var links = new FilteredElementCollector(doc)
+          .OfClass(typeof(RevitLinkInstance))
+          .ToList();
+
+      var bsBlockValue = "Детский сад 20";
+
+      var loadedExternalFilesRef = new List<RevitLinkType>();
+
+      foreach (RevitLinkInstance link in links)
+      {
+        RevitLinkType linkType = doc.GetElement(link.GetTypeId()) as RevitLinkType;
+//        if (linkType.IsNestedLink)
+//          continue;
+        var linkRef = linkType.GetExternalFileReference();
+        if (null == linkRef)
+          continue;
+
+        if (!linkType.IsNestedLink)
         {
-            UIApplication uiapp = commandData.Application;
-            UIDocument uidoc = uiapp.ActiveUIDocument;
-            Application app = uiapp.Application;
-            Document doc = uidoc.Document;
-
-            // Access current selection
-
-            Selection sel = uidoc.Selection;
-
-            // Retrieve elements from database
-
-            FilteredElementCollector col
-                = new FilteredElementCollector(doc)
-                    .WhereElementIsNotElementType()
-                    .OfCategory(BuiltInCategory.OST_Mass);
-
-            Options opt = new Options();
-            opt.ComputeReferences = true;
-            opt.DetailLevel = ViewDetailLevel.Fine;
-
-            var links = new FilteredElementCollector(doc)
-                .OfClass(typeof(RevitLinkInstance))
-                .ToList();
-
-
-
-            foreach (FamilyInstance form in col.ToList())
-            {
-                ICollection<Element> sectionElements = new List<Element>();
-
-                var sectionName = form.Symbol.LookupParameter("Группа модели").AsString();
-
-                var sectionBB = form.get_BoundingBox(null);
-                var sectionGeometry = GetSolidFromElement(form);
-
-                var bbFilter = GetBBFilter(sectionBB);
-
-                var intersectionResult = new IntersectionResultArray();
-
-                foreach (RevitLinkInstance link in links)
-                {
-
-                    using (Transaction tx = new Transaction(doc))
-                    {
-                        tx.Start("Transaction Name");
-                        var linkDoc = link.GetLinkDocument();
-                        if (linkDoc != null)
-                        {
-
-                            var allLinkElements = new FilteredElementCollector(linkDoc)
-                                .WhereElementIsNotElementType()
-                                .OfCategory(BuiltInCategory.OST_Walls)
-                                .ToList();
-
-                            foreach (var linkElement in allLinkElements)
-                            {
-
-                                Solid linkElementGeometry = GetSolidFromElement(linkElement);
-
-                                Solid intersection = BooleanOperationsUtils.ExecuteBooleanOperation(
-                                    linkElementGeometry, sectionGeometry, BooleanOperationsType.Intersect);
-                                double intersectionVolume = intersection.Volume;
-                                if (intersectionVolume <= 0) continue;
-
-                                // set parameter to linked element
-                                //                                sectionElements.Add(linkElement);
-                                var par = linkElement.LookupParameter("BS_Номер");
-                                par.Set(sectionName);
-
-                            }
-                        }
-                        tx.Commit();
-
-                    }
-
-
-
-                }
-
-
-
-            }
-
-            return Result.Succeeded;
+          loadedExternalFilesRef.Add(linkType);
+          if (linkRef.GetLinkedFileStatus() == LinkedFileStatus.Loaded)
+          {
+            linkType.Unload(null);
+          }
         }
 
-        private BoundingBoxIntersectsFilter GetBBFilter(BoundingBoxXYZ bb)
+        var linkModelPath = linkRef.GetPath();
+
+        // treow an exception if unloaded
+//        var linkDoc = link.GetLinkDocument();
+        // throw an exception if nested
+//        var linkModelPath = linkDoc.GetWorksharingCentralModelPath();
+
+        OpenOptions openOpts = new OpenOptions();
+        openOpts.SetOpenWorksetsConfiguration(new WorksetConfiguration(WorksetConfigurationOption.OpenAllWorksets));
+
+        // open link doc
+//        var currentUiDoc = uiapp.OpenAndActivateDocument(linkModelPath, openOpts, false);
+//        var currentDoc = currentUiDoc.Document;
+        var currentDoc = app.OpenDocumentFile(linkModelPath, openOpts);
+
+        var allLinkElements = new FilteredElementCollector(currentDoc)
+          .WhereElementIsNotElementType()
+          .Where(x => x.Category != null && x.IsValidObject)
+          .ToList();
+
+        using (Transaction tx = new Transaction(currentDoc))
         {
-
-            // Диагональ формообразующей
-            Outline outline = new Outline(
-                new XYZ(bb.Min.X, bb.Min.Y, bb.Min.Z),
-                new XYZ(bb.Max.X, bb.Max.Y, bb.Max.Z));
-
-            return new BoundingBoxIntersectsFilter(outline);
-        }
-
-        public Solid GetSolidFromElement(Element element)
-        {
-            Solid solid = null;
-            Options opt = new Options();
-            GeometryElement geomElem = element.get_Geometry(opt);
-            if (geomElem == null)
+          tx.Start("Assign section");
+          foreach (var linkElement in allLinkElements)
+          {
+            var par = linkElement.LookupParameter("BS_Блок");
+            if (par != null)
             {
-                return null;
+              if (!par.IsReadOnly)
+              {
+                par.Set(bsBlockValue);
+              }
             }
+          }
+          tx.Commit();
 
-            foreach (GeometryObject geomObj in geomElem)
-            {
-                solid = geomObj as Solid;
-                if (solid != null && solid.Volume > 0)
-                {
-                    return solid;
-                }
-            }
-
-            return solid;
         }
+        SyncWithCentral(currentDoc);
+        currentDoc.Close(false);
+      }
+
+      //reload links 
+      foreach (var link in loadedExternalFilesRef)
+      {
+        link.Load();
+      }
+      return Result.Succeeded;
     }
+
+    public void SyncWithCentral(Document doc)
+    {
+      // set options for accessing central model
+      var transOpts = new TransactWithCentralOptions();
+      //      var transCallBack = new SyncLockCallback();
+      // override default behavioor of waiting to try sync if central model is locked
+      //      transOpts.SetLockCallback(transCallBack);
+      // set options for sync with central
+      var syncOpts = new SynchronizeWithCentralOptions();
+      var relinquishOpts = new RelinquishOptions(true);
+      syncOpts.SetRelinquishOptions(relinquishOpts);
+      // do not autosave local model
+      syncOpts.SaveLocalAfter = false;
+      syncOpts.Comment = "Назначен BS_Блок";
+      try
+      {
+        doc.SynchronizeWithCentral(transOpts, syncOpts);
+      }
+      catch (Exception ex)
+      {
+        TaskDialog.Show($"Sync with model {doc.Title}", ex.Message);
+      }
+    }
+  }
 }
