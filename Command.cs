@@ -52,6 +52,29 @@ namespace ElementSection
         var formFilter = new BoundingBoxIsInsideFilter(formOutline);
 
         sectionForms.Add(sectionName, formFilter);
+
+
+        //set BS_Block to current document elements
+        var allLinkModelElementsByForm = GetModelElementsByForm(doc, formFilter);
+
+        using (Transaction tx = new Transaction(doc))
+        {
+          tx.Start("Assign section");
+          foreach (var linkElement in allLinkModelElementsByForm)
+          {
+
+            var par = linkElement.LookupParameter("BS_Блок");
+            if (par != null)
+            {
+              if (!par.IsReadOnly)
+              {
+                par.Set(sectionName);
+              }
+            }
+          }
+          tx.Commit();
+
+        }
       }
 
 
@@ -60,7 +83,7 @@ namespace ElementSection
         RevitLinkType linkType = doc.GetElement(link.GetTypeId()) as RevitLinkType;
 
         var linkRef = linkType.GetExternalFileReference();
-        if (null == linkRef)
+        if (null == linkRef || !linkType.Name.Contains("АР"))
           continue;
 
         if (!linkType.IsNestedLink)
