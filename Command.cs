@@ -38,7 +38,7 @@ namespace ElementSection
           .Where(f => ((FamilyInstance)f).Symbol.LookupParameter("Группа модели").AsString() != string.Empty)
           .ToList();
 
-      var sectionForms = new Dictionary<string, BoundingBoxIsInsideFilter>();
+      var sectionForms = new Dictionary<string, BoundingBoxIntersectsFilter>();
 
       foreach (FamilyInstance form in forms)
       {
@@ -49,32 +49,15 @@ namespace ElementSection
 
         var formOutline = new Outline(bbForm.Min, bbForm.Max);
 
-        var formFilter = new BoundingBoxIsInsideFilter(formOutline);
+        var bbFilter = new BoundingBoxIntersectsFilter(formOutline);
 
-        sectionForms.Add(sectionName, formFilter);
+        sectionForms.Add(sectionName, bbFilter);
 
 
         //set BS_Block to current document elements
-        var allLinkModelElementsByForm = GetModelElementsByForm(doc, formFilter);
+        var modelElementsByForm = GetModelElementsByForm(doc, bbFilter);
 
-        using (Transaction tx = new Transaction(doc))
-        {
-          tx.Start("Assign section");
-          foreach (var linkElement in allLinkModelElementsByForm)
-          {
-
-            var par = linkElement.LookupParameter("BS_Блок");
-            if (par != null)
-            {
-              if (!par.IsReadOnly)
-              {
-                par.Set(sectionName);
-              }
-            }
-          }
-          tx.Commit();
-
-        }
+        assingSectionToElements(doc, sectionName, modelElementsByForm);
       }
 
 
@@ -83,7 +66,7 @@ namespace ElementSection
         RevitLinkType linkType = doc.GetElement(link.GetTypeId()) as RevitLinkType;
 
         var linkRef = linkType.GetExternalFileReference();
-        if (null == linkRef || !linkType.Name.Contains("АР"))
+        if (null == linkRef)
           continue;
 
         if (!linkType.IsNestedLink)
@@ -103,25 +86,7 @@ namespace ElementSection
         foreach (var form in sectionForms)
         {
           var allLinkModelElementsByForm = GetModelElementsByForm(currentDoc, form.Value);
-
-          using (Transaction tx = new Transaction(currentDoc))
-          {
-            tx.Start("Assign section");
-            foreach (var linkElement in allLinkModelElementsByForm)
-            {
-
-              var par = linkElement.LookupParameter("BS_Блок");
-              if (par != null)
-              {
-                if (!par.IsReadOnly)
-                {
-                  par.Set(form.Key);
-                }
-              }
-            }
-            tx.Commit();
-
-          }
+          assingSectionToElements(currentDoc, form.Key, allLinkModelElementsByForm);
         }
 
         SyncWithCentral(currentDoc);
@@ -136,7 +101,26 @@ namespace ElementSection
       return Result.Succeeded;
     }
 
-    //    private List<>
+    private static void assingSectionToElements(Document doc, string sectionName, List<Element> modelElementsByForm)
+    {
+      using (Transaction tx = new Transaction(doc))
+      {
+        tx.Start("Assign section");
+        foreach (var e in modelElementsByForm)
+        {
+          var par = e.LookupParameter("BS_Блок");
+          if (par != null)
+          {
+            if (!par.IsReadOnly)
+            {
+              par.Set(sectionName);
+            }
+          }
+        }
+        tx.Commit();
+
+      }
+    }
 
     private Solid GetSolidFromElement(Element element)
     {
@@ -152,30 +136,32 @@ namespace ElementSection
       return null;
     }
 
-
-
-    private List<Element> GetModelElementsByForm(Document doc, BoundingBoxIsInsideFilter bbFilter)
+    private List<Element> GetModelElementsByForm(Document doc, BoundingBoxIntersectsFilter bbFilter)
     {
 
       var binCategories = Enum.GetValues(typeof(BuiltInCategory)).Cast<int>().ToList();
 
-      var categories = ViewSchedule.GetValidCategoriesForSchedule().AsEnumerable()
+      var modelCategories = ViewSchedule.GetValidCategoriesForSchedule().AsEnumerable()
         .Where(x => binCategories.Contains(x.IntegerValue))
         .Select(x => x.IntegerValue)
         .ToList();
 
-      var allLinkElements = new FilteredElementCollector(doc)
+      var allModelElements = new FilteredElementCollector(doc)
         .WhereElementIsNotElementType()
         .WherePasses(bbFilter)
         .Where(x => x.Category != null &&
                     x.IsValidObject &&
-                    ((x.Location != null && (x.Location is LocationCurve || x.Location is LocationPoint)) || categories.Contains(x.Category.Id.IntegerValue)) &&
+                    (x.Location != null && (x.Location is LocationCurve || x.Location is LocationPoint)) &&
+                    modelCategories.Contains(x.Category.Id.IntegerValue) &&
                     x.GetTypeId().IntegerValue > 0 &&
-                    !(x is ProjectLocation) &&
-                    !(x is View) &&
-                    !(x is Room))
-        .ToList();
-      return allLinkElements;
+
+                    x.Category.Id.IntegerValue != (int)BuiltInCategory.OST_Mass &&
+                    x.Category.Id.IntegerValue != (int)BuiltInCategory.OST_ProjectBasePoint &&
+                    x.Category.Id.IntegerValue != (int)BuiltInCategory.OST_Rooms &&
+                    x.Category.Id.IntegerValue != (int)BuiltInCategory.OST_Views
+                    ).ToList();
+
+      return allModelElements;
     }
 
     public void SyncWithCentral(Document doc)
