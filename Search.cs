@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using FilterStringRule = Autodesk.Revit.DB.FilterStringRule;
 
 namespace ElementSection
 {
@@ -22,17 +23,37 @@ namespace ElementSection
       UIDocument uidoc = uiapp.ActiveUIDocument;
       Document doc = uidoc.Document;
 
+      var paramName = "BS_Блок";
+      var fRule = new SharedParameterApplicableRule(paramName);
+      var parFilter = new ElementParameterFilter(fRule);
+
+
+      var rule = ParameterFilterRuleFactory.CreateSharedParameterApplicableRule(paramName);
+
+//      FilterStringRuleEvaluator sRule = new FilterStringContains();
+//
+//      ParameterValueProvider provider = new ParameterValueProvider();
+//
+//      var paramFilter = new FilterStringRule(rule, sRule, "2222", false);
+
+      var elementParameterFilter = new ElementParameterFilter(rule);
+
+
+
+
+
+      // iterate throuegh all doc elements
+      
       var links = new FilteredElementCollector(doc)
         .OfClass(typeof(RevitLinkInstance))
         .ToList();
-      var loadedExternalFilesRef = new List<RevitLinkType>();
 
       var o = new List<string>();
       foreach (RevitLinkInstance link in links)
       {
         RevitLinkType linkType = doc.GetElement(link.GetTypeId()) as RevitLinkType;
         var linkRef = linkType.GetExternalFileReference();
-        if (null == linkRef || !linkType.Name.Contains("АР"))
+        if (null == linkRef)
           continue;
 
         var currentDoc = link.Document;
@@ -46,6 +67,7 @@ namespace ElementSection
 
         var allLinkElements = new FilteredElementCollector(currentDoc)
           .WhereElementIsNotElementType()
+          .WherePasses(elementParameterFilter)
           .Where(x => x.Category != null &&
                       x.IsValidObject &&
                       ((x.Location != null && (x.Location is LocationCurve || x.Location is LocationPoint)) ||
@@ -55,16 +77,16 @@ namespace ElementSection
                       !(x is View))
           .ToList();
 
-
+        // kek
         foreach (Element e in allLinkElements)
         {
-          if (e.LookupParameter("BS_Блок").AsString() == "Секция 05")
+          if (e.LookupParameter("BS_Блок").AsString() != "Секция 1")
           {
-            o.Add(e.ToString());
+            o.Add(e.Name);
           }
         }
 
-        TaskDialog.Show("kek", o.ToString());
+        TaskDialog.Show("kek", String.Join(", ", o.Select(e => e.ToString())));
       }
 
       return Result.Succeeded;
