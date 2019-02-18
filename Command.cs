@@ -151,15 +151,15 @@ namespace ElementSection
         .WherePasses(bbFilter)
         .Where(x => x.Category != null &&
                     x.IsValidObject &&
-                    (x.Location != null && (x.Location is LocationCurve || x.Location is LocationPoint)) &&
+                    x.Location != null  &&
                     modelCategories.Contains(x.Category.Id.IntegerValue) &&
                     x.GetTypeId().IntegerValue > 0 &&
-
                     x.Category.Id.IntegerValue != (int)BuiltInCategory.OST_Mass &&
                     x.Category.Id.IntegerValue != (int)BuiltInCategory.OST_ProjectBasePoint &&
-                    x.Category.Id.IntegerValue != (int)BuiltInCategory.OST_Rooms &&
                     x.Category.Id.IntegerValue != (int)BuiltInCategory.OST_Views
                     ).ToList();
+       
+      
 
       return allModelElements;
     }
